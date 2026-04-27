@@ -180,6 +180,36 @@ export const inferCellTypeForValue = (value: any, key = ""): string => {
   return t === "unknown" ? "text" : t;
 };
 
+// Cell renderers serialize values as strings on save. Coerce them back to
+// the native primitive shape implied by the column type so YAML stays clean
+// (unquoted booleans/numbers) and downstream inference doesn't misread the
+// stringified form as text. Returns the value unchanged when no coercion
+// applies.
+export const coerceStringToType = (value: any, type: string): any => {
+  if (typeof value !== "string") return value;
+  if (type === "boolean") {
+    if (value === "true") return true;
+    if (value === "false") return false;
+    return value;
+  }
+  if (type === "number") {
+    if (value.trim() === "") return value;
+    const n = Number(value);
+    return Number.isNaN(n) ? value : n;
+  }
+  return value;
+};
+
+// Try to JSON-parse a string; return undefined on failure. Convenience
+// wrapper around the try/catch boilerplate.
+export const tryParseJSON = <T = any>(s: string): T | undefined => {
+  try {
+    return JSON.parse(s) as T;
+  } catch {
+    return undefined;
+  }
+};
+
 // Build an ObjectType-shape schema from an example object, recursing into
 // nested objects/arrays-of-objects so deeply-nested keys also get a typed
 // schema entry. Mirrors the structure expected by ObjectCell/ObjectEditor.
