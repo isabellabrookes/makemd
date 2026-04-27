@@ -42,7 +42,7 @@ import { safelyParseJSON } from "shared/utils/json";
 import { mdbSchemaToFrameSchema } from "shared/utils/makemd/schema";
 import { parseMultiString } from "utils/parsers";
 import { getAllParentTags } from "utils/tags";
-import { removeLinkInContexts, removePathInContexts, removeTagInContexts, renameLinkInContexts, renamePathInContexts, renameTagInContexts, updateContextWithProperties } from "../utils/contexts/context";
+import { backfillObjectSchemasForSpace, removeLinkInContexts, removePathInContexts, removeTagInContexts, renameLinkInContexts, renamePathInContexts, renameTagInContexts, updateContextWithProperties } from "../utils/contexts/context";
 import { API } from "./api";
 import { SpacesCommandsAdapter } from "./commands";
 
@@ -84,6 +84,10 @@ public api: API;
     public pathsIndex: Map<string, PathState>
     public spacesIndex: Map<string, SpaceState>
     public contextsIndex: Map<string, ContextState>
+    // Spaces whose object-column schemas have already been backfilled this
+    // session. Tracked here so the contextReloaded hook only runs the (slow)
+    // per-row scan once per space.
+    private backfilledSpaces: Set<string> = new Set()
     public actionsIndex: Map<string, Command[]>
     public kits: Map<string, Kit>
     public actions: Map<string, Command[]>
@@ -790,8 +794,21 @@ public api: API;
             // Context Reloaded
         }
         if (!changed && !force) { return false }
-            
+
             this.contextsIndex.set(path, cache);
+            // Backfill object-column schemas once per session per space. This
+            // catches columns that were synced before the live-widening hook
+            // existed (their .value would otherwise stay empty until each row
+            // file gets edited).
+            if (!this.backfilledSpaces.has(path)) {
+                this.backfilledSpaces.add(path);
+                const spaceInfo = this.spacesIndex.get(path)?.space;
+                if (spaceInfo) {
+                    backfillObjectSchemasForSpace(this, spaceInfo).catch(() => {
+                        // Silent — backfill is best-effort
+                    });
+                }
+            }
             const pathState = this.pathsIndex.get(path);
             if (pathState && cache.dbExists && !pathState.readOnly) {
                 if (this.settings.syncFormulaToFrontmatter) {

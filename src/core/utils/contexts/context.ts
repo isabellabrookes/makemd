@@ -17,6 +17,7 @@ import { defaultContextFields } from "shared/schemas/fields";
 import { safelyParseJSON } from "shared/utils/json";
 import { serializeMultiString } from "utils/serializers";
 import { parseMultiString, parseProperty } from "../../../utils/parsers";
+import { deriveSchemaFromValue } from "../../../utils/properties";
 
 export type ContextPath = {
   space: string;
@@ -292,6 +293,135 @@ export const getContextProperties = (superstate: Superstate, context: string) : 
 }
 
 
+// Additive merge — only adds keys; never overwrites or removes existing
+// schema entries. Recurses into nested object schemas so deeper sub-keys
+// also get added.
+const mergeObjectSchema = (
+  existingType: any,
+  sample: Record<string, any>,
+): { merged: any; changed: boolean } => {
+  let changed = false;
+  const merged: any = { ...(existingType ?? {}) };
+  for (const k of Object.keys(sample)) {
+    const v = sample[k];
+    if (!(k in merged)) {
+      merged[k] = { ...deriveSchemaFromValue({ [k]: v })[k] };
+      changed = true;
+    } else {
+      const existingEntry = merged[k];
+      const sub = Array.isArray(v) ? v[0] : v;
+      if (
+        sub &&
+        typeof sub === "object" &&
+        !Array.isArray(sub) &&
+        (existingEntry.type === "object" ||
+          existingEntry.type === "object-multi")
+      ) {
+        const subExisting = existingEntry.value?.type ?? {};
+        const subResult = mergeObjectSchema(subExisting, sub);
+        if (subResult.changed) {
+          merged[k] = {
+            ...existingEntry,
+            value: {
+              ...(existingEntry.value ?? {}),
+              type: subResult.merged,
+              typeName: existingEntry.value?.typeName ?? k,
+            },
+          };
+          changed = true;
+        }
+      }
+    }
+  }
+  return { merged, changed };
+};
+
+// Whenever a file's frontmatter changes, widen each object-typed column's
+// schema additively. Lets users (or templates) introduce new sub-fields by
+// typing them into any file in the space; other files will then see those
+// sub-rows on render.
+export const widenObjectSchemasForPath = async (
+  superstate: Superstate,
+  path: string,
+  mdb: SpaceTable,
+  space: SpaceInfo,
+): Promise<void> => {
+  const objectCols = mdb.cols.filter(
+    (c) => c.type === "object" || c.type === "object-multi",
+  );
+  if (objectCols.length === 0) return;
+  const rawFm = await superstate.spaceManager.readProperties(path);
+  if (!rawFm) return;
+
+  for (const col of objectCols) {
+    let v: any = rawFm[col.name];
+    if (v == null) continue;
+    // readProperties() runs each value through parseProperty, which
+    // JSON-stringifies nested objects. Parse it back so we can introspect the
+    // live shape; if it's not actually JSON, give up on this column.
+    if (typeof v === "string") {
+      try {
+        v = JSON.parse(v);
+      } catch {
+        continue;
+      }
+    }
+    if (typeof v !== "object") continue;
+    const sample = Array.isArray(v) ? v[0] : v;
+    if (!sample || typeof sample !== "object" || Array.isArray(sample))
+      continue;
+
+    let existing: any = {};
+    try {
+      existing = col.value ? JSON.parse(col.value) : {};
+    } catch {
+      existing = {};
+    }
+    const { merged, changed } = mergeObjectSchema(existing.type ?? {}, sample);
+    // Skip the write entirely when nothing's new — avoids write amplification
+    // on every keystroke in unrelated frontmatter fields.
+    if (!changed) continue;
+
+    const newValue = JSON.stringify({
+      ...existing,
+      type: merged,
+      typeName: existing.typeName ?? col.name,
+    });
+
+    await superstate.spaceManager.saveSpaceProperty(
+      space.path,
+      { ...col, value: newValue },
+      col,
+    );
+  }
+};
+
+// One-shot retroactive widening: walk every row in a space's context table
+// and apply per-path widening. Use to backfill columns that were synced
+// before the live-widening hook existed (their .value would otherwise stay
+// empty until each file gets edited).
+export const backfillObjectSchemasForSpace = async (
+  superstate: Superstate,
+  space: SpaceInfo,
+): Promise<void> => {
+  const mdb = await superstate.spaceManager.contextForSpace(space.path);
+  if (!mdb) return;
+  const hasObjectCols = mdb.cols.some(
+    (c) => c.type === "object" || c.type === "object-multi",
+  );
+  if (!hasObjectCols) return;
+  const paths = mdb.rows
+    .map((r) => r[PathPropertyName])
+    .filter((p): p is string => !!p);
+  for (const p of paths) {
+    // Re-read the mdb each iteration so widenings from earlier rows are
+    // visible (each saveSpaceProperty mutates the column value).
+    const fresh = await superstate.spaceManager.contextForSpace(space.path);
+    if (!fresh) return;
+    await widenObjectSchemasForPath(superstate, p, fresh, space);
+  }
+};
+
 export const updateContextWithProperties = async (
   superstate: Superstate,
   path: string,
@@ -323,8 +453,12 @@ export const updateContextWithProperties = async (
     ]
 }
   }
+  const widenObjectSchemas = (mdb: SpaceTable, space: SpaceInfo) =>
+    widenObjectSchemasForPath(superstate, path, mdb, space);
+
   const promises = spaces.map((space) => {
     return processContext(superstate.spaceManager, space, async (mdb, space) => {
+      await widenObjectSchemas(mdb, space);
       const newRows = await updatePath(mdb);
       const newDB = {
         ...mdb,
