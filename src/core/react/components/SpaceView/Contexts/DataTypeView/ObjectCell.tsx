@@ -22,6 +22,7 @@ import { MenuObject } from "shared/types/menu";
 import { windowFromDocument } from "shared/utils/dom";
 import { parseObject } from "utils/parsers";
 import {
+  defaultValueForType,
   inferCellTypeForValue,
   propertyIsObjectType,
 } from "utils/properties";
@@ -216,6 +217,11 @@ export const ObjectEditor = (props: {
         spaces: [],
         fields: [],
         saveField: (_source, newField) => {
+          // Seed the default value for the chosen type — critical for
+          // object/object-multi so the live widening hook (which infers from
+          // the value shape) sees an object/array rather than "" and types
+          // the column entry correctly.
+          const seed = defaultValueForType(newField.type);
           saveType(
             {
               ...(props.type ?? {}),
@@ -224,7 +230,7 @@ export const ObjectEditor = (props: {
                 label: newField.name,
               },
             },
-            { ...value, [newField.name]: "" },
+            { ...value, [newField.name]: seed === undefined ? "" : seed },
           );
           return true;
         },
@@ -288,7 +294,7 @@ export const ObjectEditor = (props: {
 
           return (
             <DataPropertyView
-              key={i}
+              key={f.name}
               initialValue={initial}
               superstate={props.superstate}
               updateValue={(nv) => saveVal(f.name, nv)}
@@ -364,9 +370,16 @@ export const ObjectCell = (
     props.saveValue(JSON.stringify(newValue));
   };
   const insertMultiValue = (index: number) => {
-    const item = Object.keys(type).reduce((p, c) => ({ ...p, [c]: "" }), {});
+    // type may be undefined when the column has no declared schema yet; in
+    // that case start with an empty object so the user can populate via
+    // + Property after insertion.
+    const item = Object.keys(type ?? {}).reduce(
+      (p, c) => ({ ...p, [c]: "" }),
+      {},
+    );
+    const arr = (value as Record<string, any>[]) ?? [];
     props.saveValue(
-      JSON.stringify([...value.slice(0, index), item, ...value.slice(index)]),
+      JSON.stringify([...arr.slice(0, index), item, ...arr.slice(index)]),
     );
   };
   const saveMultiValue = (
@@ -555,6 +568,29 @@ export const ObjectCell = (
           </SortableObjectItem>
         ))}
         </SortableContext>
+        {/* Bottom-of-list affordance — without this, an empty object-multi
+            cell renders nothing and the user has no way to seed the first
+            entry from this view. */}
+        <button
+          onClick={() =>
+            insertMultiValue((value as Record<string, any>[]).length)
+          }
+          className="mk-inline-button"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            opacity: 0.7,
+          }}
+        >
+          <div
+            className="mk-icon-xsmall"
+            dangerouslySetInnerHTML={{
+              __html: props.superstate.ui.getSticker("ui//plus"),
+            }}
+          ></div>
+          {parsedValue?.typeName ?? i18n.fieldTypes.object}
+        </button>
         {dragProperty != -1 &&
           createPortal(
             <DragOverlay dropAnimation={null} zIndex={1600}>
