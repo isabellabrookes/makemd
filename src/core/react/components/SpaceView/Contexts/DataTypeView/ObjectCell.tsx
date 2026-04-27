@@ -22,9 +22,11 @@ import { MenuObject } from "shared/types/menu";
 import { windowFromDocument } from "shared/utils/dom";
 import { parseObject } from "utils/parsers";
 import {
+  coerceStringToType,
   defaultValueForType,
   inferCellTypeForValue,
   propertyIsObjectType,
+  tryParseJSON,
 } from "utils/properties";
 import { CollapseToggleSmall } from "core/react/components/UI/Toggles/CollapseToggleSmall";
 import { CellEditMode, TableCellMultiProp } from "../TableView/TableView";
@@ -282,22 +284,36 @@ export const ObjectEditor = (props: {
         {allProperties.map((f, i) => {
           const raw = value[f.name];
           // DataPropertyView/cell renderers expect a string. Object/array
-          // values get stringified so the routed-to ObjectCell can re-parse
-          // them and recurse — this is what makes nested objects render
-          // through the existing cell pipeline rather than custom chrome.
+          // values get JSON-stringified so the routed-to ObjectCell can
+          // re-parse them and recurse; primitives get stringified too because
+          // BooleanCell, NumberCell, etc. compare on string equality.
           const initial =
             raw == null
               ? ""
               : typeof raw === "object"
                 ? JSON.stringify(raw)
-                : raw;
+                : String(raw);
+
+          // Cell renderers (BooleanCell, NumberCell, the inner ObjectCell)
+          // bubble values up as strings. Coerce them back to their native
+          // shape before storing so YAML stays clean and downstream
+          // inference doesn't misread them as text.
+          const isObjectField =
+            f.type === "object" || f.type === "object-multi";
+          const handleUpdate = (nv: any) => {
+            if (isObjectField && typeof nv === "string") {
+              const parsed = tryParseJSON(nv);
+              if (parsed !== undefined) return saveVal(f.name, parsed);
+            }
+            saveVal(f.name, coerceStringToType(nv, f.type));
+          };
 
           return (
             <DataPropertyView
               key={f.name}
               initialValue={initial}
               superstate={props.superstate}
-              updateValue={(nv) => saveVal(f.name, nv)}
+              updateValue={handleUpdate}
               updateFieldValue={(fv, nv) => saveFieldValue(f, fv, nv)}
               propertyMenu={(e) => showPropertyMenu(e, f.name)}
               row={value}
@@ -540,33 +556,33 @@ export const ObjectCell = (
           )}
           strategy={verticalListSortingStrategy}
         >
-        {(value as Record<string, any>[]).map((f, i) => (
-          <SortableObjectItem
-            key={i}
-            id={`${sortableNamespace}-${i}`}
-            namespace={sortableNamespace}
-            index={i}
-          >
-            {(listeners) => (
-              <ObjectEditor
-                superstate={superstate}
-                value={f}
-                compactMode={props.compactMode}
-                row={props.row}
-                typeName={parsedValue.typeName}
-                columns={props.columns}
-                type={type}
-                saveValue={(newValue) => saveMultiValue(newValue, i)}
-                saveType={saveType}
-                editMode={props.editMode}
-                draggable={true}
-                index={i}
-                showDragMenu={(e) => showPropertyMultiMenu(e, i)}
-                dragHandleListeners={listeners}
-              />
-            )}
-          </SortableObjectItem>
-        ))}
+          {(value as Record<string, any>[]).map((f, i) => (
+            <SortableObjectItem
+              key={i}
+              id={`${sortableNamespace}-${i}`}
+              namespace={sortableNamespace}
+              index={i}
+            >
+              {(listeners) => (
+                <ObjectEditor
+                  superstate={superstate}
+                  value={f}
+                  compactMode={props.compactMode}
+                  row={props.row}
+                  typeName={parsedValue.typeName}
+                  columns={props.columns}
+                  type={type}
+                  saveValue={(newValue) => saveMultiValue(newValue, i)}
+                  saveType={saveType}
+                  editMode={props.editMode}
+                  draggable={true}
+                  index={i}
+                  showDragMenu={(e) => showPropertyMultiMenu(e, i)}
+                  dragHandleListeners={listeners}
+                />
+              )}
+            </SortableObjectItem>
+          ))}
         </SortableContext>
         {/* Bottom-of-list affordance — without this, an empty object-multi
             cell renders nothing and the user has no way to seed the first
