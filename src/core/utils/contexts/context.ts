@@ -17,7 +17,7 @@ import { defaultContextFields } from "shared/schemas/fields";
 import { safelyParseJSON } from "shared/utils/json";
 import { serializeMultiString } from "utils/serializers";
 import { parseMultiString, parseProperty } from "../../../utils/parsers";
-import { deriveSchemaFromValue } from "../../../utils/properties";
+import { deriveSchemaFromValue, inferCellTypeForValue } from "../../../utils/properties";
 
 export type ContextPath = {
   space: string;
@@ -293,9 +293,11 @@ export const getContextProperties = (superstate: Superstate, context: string) : 
 }
 
 
-// Additive merge — only adds keys; never overwrites or removes existing
-// schema entries. Recurses into nested object schemas so deeper sub-keys
-// also get added.
+// Merge sample-derived schema into an existing schema. Adds new keys.
+// For existing keys, only upgrades when the existing entry is a "text"
+// placeholder (the fallback we use when widening saw an empty value) and
+// the live value now infers to something more specific. Never downgrades or
+// overrides a non-text type — explicit user choices are preserved.
 const mergeObjectSchema = (
   existingType: any,
   sample: Record<string, any>,
@@ -307,29 +309,39 @@ const mergeObjectSchema = (
     if (!(k in merged)) {
       merged[k] = { ...deriveSchemaFromValue({ [k]: v })[k] };
       changed = true;
-    } else {
-      const existingEntry = merged[k];
-      const sub = Array.isArray(v) ? v[0] : v;
-      if (
-        sub &&
-        typeof sub === "object" &&
-        !Array.isArray(sub) &&
-        (existingEntry.type === "object" ||
-          existingEntry.type === "object-multi")
-      ) {
-        const subExisting = existingEntry.value?.type ?? {};
-        const subResult = mergeObjectSchema(subExisting, sub);
-        if (subResult.changed) {
-          merged[k] = {
-            ...existingEntry,
-            value: {
-              ...(existingEntry.value ?? {}),
-              type: subResult.merged,
-              typeName: existingEntry.value?.typeName ?? k,
-            },
-          };
-          changed = true;
-        }
+      continue;
+    }
+    const existingEntry = merged[k];
+    const inferred = inferCellTypeForValue(v, k);
+    // Upgrade text placeholder to a more specific inferred type if the live
+    // value clearly demands it.
+    if (existingEntry.type === "text" && inferred !== "text") {
+      merged[k] = { ...deriveSchemaFromValue({ [k]: v })[k] };
+      changed = true;
+      continue;
+    }
+    // Recurse into nested object schemas so deeper sub-keys also get added
+    // / upgraded.
+    const sub = Array.isArray(v) ? v[0] : v;
+    if (
+      sub &&
+      typeof sub === "object" &&
+      !Array.isArray(sub) &&
+      (existingEntry.type === "object" ||
+        existingEntry.type === "object-multi")
+    ) {
+      const subExisting = existingEntry.value?.type ?? {};
+      const subResult = mergeObjectSchema(subExisting, sub);
+      if (subResult.changed) {
+        merged[k] = {
+          ...existingEntry,
+          value: {
+            ...(existingEntry.value ?? {}),
+            type: subResult.merged,
+            typeName: existingEntry.value?.typeName ?? k,
+          },
+        };
+        changed = true;
       }
     }
   }
