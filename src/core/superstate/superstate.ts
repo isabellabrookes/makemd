@@ -84,10 +84,12 @@ public api: API;
     public pathsIndex: Map<string, PathState>
     public spacesIndex: Map<string, SpaceState>
     public contextsIndex: Map<string, ContextState>
-    // Spaces whose object-column schemas have already been backfilled this
-    // session. Tracked here so the contextReloaded hook only runs the (slow)
-    // per-row scan once per space.
-    private backfilledSpaces: Set<string> = new Set()
+    // Object-typed columns whose schemas have already been backfilled this
+    // session, keyed as `${spacePath}::${colName}`. Tracked here so the
+    // contextReloaded hook only runs the (slow) per-row scan once per
+    // column, but still fires when a brand-new object column appears in a
+    // space we've already loaded.
+    private backfilledObjectCols: Set<string> = new Set()
     public actionsIndex: Map<string, Command[]>
     public kits: Map<string, Kit>
     public actions: Map<string, Command[]>
@@ -796,12 +798,21 @@ public api: API;
         if (!changed && !force) { return false }
 
             this.contextsIndex.set(path, cache);
-            // Backfill object-column schemas once per session per space. This
+            // Backfill object-column schemas once per session per column. This
             // catches columns that were synced before the live-widening hook
             // existed (their .value would otherwise stay empty until each row
-            // file gets edited).
-            if (!this.backfilledSpaces.has(path)) {
-                this.backfilledSpaces.add(path);
+            // file gets edited), and also covers brand-new object columns
+            // added to a space we've already loaded.
+            const objectCols = (cache.contextTable?.cols ?? []).filter(
+                (c) => c.type === "object" || c.type === "object-multi",
+            );
+            const newObjectCols = objectCols.filter(
+                (c) => !this.backfilledObjectCols.has(`${path}::${c.name}`),
+            );
+            if (newObjectCols.length > 0) {
+                newObjectCols.forEach((c) =>
+                    this.backfilledObjectCols.add(`${path}::${c.name}`),
+                );
                 const spaceInfo = this.spacesIndex.get(path)?.space;
                 if (spaceInfo) {
                     backfillObjectSchemasForSpace(this, spaceInfo).catch(() => {
