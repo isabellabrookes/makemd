@@ -1,5 +1,11 @@
 import { DragOverlay, useDndMonitor } from "@dnd-kit/core";
-import { arrayMove } from "@dnd-kit/sortable";
+import {
+  arrayMove,
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { showNewPropertyMenu } from "core/react/components/UI/Menus/contexts/newSpacePropertyMenu";
 import {
   defaultMenu,
@@ -15,12 +21,48 @@ import { DBRow, SpaceTableColumn } from "shared/types/mdb";
 import { MenuObject } from "shared/types/menu";
 import { windowFromDocument } from "shared/utils/dom";
 import { parseObject } from "utils/parsers";
-import { propertyIsObjectType } from "utils/properties";
+import {
+  inferCellTypeForValue,
+  propertyIsObjectType,
+} from "utils/properties";
+import { CollapseToggleSmall } from "core/react/components/UI/Toggles/CollapseToggleSmall";
 import { CellEditMode, TableCellMultiProp } from "../TableView/TableView";
 import { DataPropertyView } from "./DataPropertyView";
 
 export type ObjectType = {
   [key: string]: { type: string; label: string; value?: Record<string, any> };
+};
+
+const SortableObjectItem: React.FC<{
+  id: string;
+  namespace: string;
+  index: number;
+  children: (handleProps: any) => React.ReactNode;
+}> = ({ id, namespace, index, children }) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id,
+    data: { type: "object", namespace, index },
+  });
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.4 : 1,
+      }}
+      {...attributes}
+    >
+      {children(listeners)}
+    </div>
+  );
 };
 
 export const ObjectEditor = (props: {
@@ -37,28 +79,36 @@ export const ObjectEditor = (props: {
   index?: number;
   draggable: boolean;
   showDragMenu?: (e: React.MouseEvent) => void;
+  showHeader?: boolean;
+  dragHandleListeners?: any;
 }) => {
   const { value, saveValue, saveType } = props;
-  const allProperties = [
-    ...Object.keys(props.type ?? {}).map((f) => {
-      return {
+  // Two sources of fields: keys with a declared schema in props.type, and
+  // keys present in the value that have no declared type (untyped frontmatter
+  // sub-keys). For the latter we infer a sensible cell type so links render
+  // as links, dates as dates, etc., instead of leaking as text or
+  // [object Object]. Memoized because rebuilding this on every render
+  // cascaded fresh string identities into nested ObjectCells, which in turn
+  // invalidated their useMemos and made deeply-nested frontmatter very slow.
+  const allProperties = useMemo(
+    () => [
+      ...Object.keys(props.type ?? {}).map((f) => ({
         name: f,
         type: props.type[f].type,
         value: JSON.stringify({
           ...props.type[f].value,
           alias: props.type[f].label,
         }),
-      };
-    }),
-    ...Object.keys(value)
-      .filter((f) => !Object.keys(props.type ?? {}).includes(f))
-      .map((f) => {
-        return {
+      })),
+      ...Object.keys(value)
+        .filter((f) => !Object.keys(props.type ?? {}).includes(f))
+        .map((f) => ({
           name: f,
-          type: "text",
-        };
-      }),
-  ];
+          type: inferCellTypeForValue(value[f], f),
+        })),
+    ],
+    [props.type, value],
+  );
   const saveKey = (key: string, newKey: string) => {
     if (key != newKey)
       saveValue({
@@ -67,7 +117,7 @@ export const ObjectEditor = (props: {
         [key]: undefined,
       });
   };
-  const saveVal = (key: string, val: string) => {
+  const saveVal = (key: string, val: string | Record<string, any> | any[]) => {
     saveValue({
       ...value,
       [key]: val,
@@ -94,7 +144,41 @@ export const ObjectEditor = (props: {
               saveKey(field, value);
             }}
           ></InputModal>,
-          windowFromDocument(e.view.document)
+          windowFromDocument(e.view.document),
+        );
+      },
+    });
+    menuOptions.push({
+      name: i18n.menu.changePropertyType ?? "Change Type",
+      icon: "ui//list",
+      value: "change-type",
+      onClick: (ev: React.MouseEvent) => {
+        const r = (ev.target as HTMLElement).getBoundingClientRect();
+        showNewPropertyMenu(
+          props.superstate,
+          r,
+          windowFromDocument(ev.view.document),
+          {
+            spaces: [],
+            fields: [],
+            name: field,
+            type: props.type?.[field]?.type,
+            saveField: (_source, newField) => {
+              saveType(
+                {
+                  ...(props.type ?? {}),
+                  [field]: {
+                    ...(props.type?.[field] ?? { label: field }),
+                    type: newField.type,
+                    label: props.type?.[field]?.label ?? field,
+                  },
+                },
+                value,
+              );
+              return true;
+            },
+            fileMetadata: true,
+          },
         );
       },
     });
@@ -111,21 +195,48 @@ export const ObjectEditor = (props: {
           Object.keys(value).reduce((p, c) => {
             if (c != field) return { ...p, [c]: value[c] };
             return p;
-          }, {})
+          }, {}),
         );
       },
     });
     props.superstate.ui.openMenu(
       offset,
       defaultMenu(props.superstate.ui, menuOptions),
-      windowFromDocument(e.view.document)
+      windowFromDocument(e.view.document),
+    );
+  };
+
+  const addProperty = (e: React.MouseEvent) => {
+    const offset = (e.target as HTMLElement).getBoundingClientRect();
+    showNewPropertyMenu(
+      props.superstate,
+      offset,
+      windowFromDocument(e.view.document),
+      {
+        spaces: [],
+        fields: [],
+        saveField: (_source, newField) => {
+          saveType(
+            {
+              ...(props.type ?? {}),
+              [newField.name]: {
+                type: newField.type,
+                label: newField.name,
+              },
+            },
+            { ...value, [newField.name]: "" },
+          );
+          return true;
+        },
+        fileMetadata: true,
+      },
     );
   };
 
   const saveFieldValue = (
     field: SpaceTableColumn,
     fieldValue: string,
-    value: string
+    value: string,
   ) => {
     if (field.type == "object" || field.type == "object-multi") {
       const val = parseObject(value, field.type == "object-multi");
@@ -152,30 +263,64 @@ export const ObjectEditor = (props: {
       {props.draggable && (
         <div
           className="mk-cell-object-group-header"
+          style={{ cursor: "grab", userSelect: "none" }}
           onClick={(e) => {
             props.showDragMenu(e);
           }}
+          {...(props.dragHandleListeners ?? {})}
         >
           {props.typeName ?? i18n.fieldTypes.object}
         </div>
       )}
       <div className="mk-cell-object">
-        {allProperties.map((f, i) => (
-          <DataPropertyView
-            key={i}
-            initialValue={value[f.name] ?? ""}
-            superstate={props.superstate}
-            updateValue={(v) => saveVal(f.name, v)}
-            updateFieldValue={(fv, v) => saveFieldValue(f, fv, v)}
-            propertyMenu={(e) => showPropertyMenu(e, f.name)}
-            row={value}
-            columns={allProperties}
-            source={null}
-            compactMode={props.compactMode}
-            column={f}
-            editMode={CellEditMode.EditModeAlways}
-          ></DataPropertyView>
-        ))}
+        {allProperties.map((f, i) => {
+          const raw = value[f.name];
+          // DataPropertyView/cell renderers expect a string. Object/array
+          // values get stringified so the routed-to ObjectCell can re-parse
+          // them and recurse — this is what makes nested objects render
+          // through the existing cell pipeline rather than custom chrome.
+          const initial =
+            raw == null
+              ? ""
+              : typeof raw === "object"
+                ? JSON.stringify(raw)
+                : raw;
+
+          return (
+            <DataPropertyView
+              key={i}
+              initialValue={initial}
+              superstate={props.superstate}
+              updateValue={(nv) => saveVal(f.name, nv)}
+              updateFieldValue={(fv, nv) => saveFieldValue(f, fv, nv)}
+              propertyMenu={(e) => showPropertyMenu(e, f.name)}
+              row={value}
+              columns={allProperties}
+              source={null}
+              compactMode={props.compactMode}
+              column={f}
+              editMode={CellEditMode.EditModeAlways}
+            ></DataPropertyView>
+          );
+        })}
+        <button
+          onClick={addProperty}
+          className="mk-inline-button"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            opacity: 0.7,
+          }}
+        >
+          <div
+            className="mk-icon-xsmall"
+            dangerouslySetInnerHTML={{
+              __html: props.superstate.ui.getSticker("ui//plus"),
+            }}
+          ></div>
+          {i18n.labels.propertyFileProp ?? "Property"}
+        </button>
       </div>
     </div>
   );
@@ -187,14 +332,14 @@ export const ObjectCell = (
     columns: SpaceTableColumn[];
     compactMode: boolean;
     row: DBRow;
-  }
+  },
 ) => {
   const parsedValue = parseFieldValue(props.propertyValue, "object");
   const type = parsedValue.type as ObjectType;
   const { initialValue, superstate } = props;
   const value = useMemo(
     () => parseObject(initialValue, props.multi),
-    [initialValue, props.multi]
+    [initialValue, props.multi],
   );
   const saveType = (newType: ObjectType, _value: Record<string, string>) => {
     if (props.multi) {
@@ -206,12 +351,12 @@ export const ObjectCell = (
       }));
       props.savePropValue(
         JSON.stringify({ ...parsedValue, type: newType }),
-        JSON.stringify(newValues)
+        JSON.stringify(newValues),
       );
     } else {
       props.savePropValue(
         JSON.stringify({ ...parsedValue, type: newType }),
-        JSON.stringify(_value)
+        JSON.stringify(_value),
       );
     }
   };
@@ -221,12 +366,12 @@ export const ObjectCell = (
   const insertMultiValue = (index: number) => {
     const item = Object.keys(type).reduce((p, c) => ({ ...p, [c]: "" }), {});
     props.saveValue(
-      JSON.stringify([...value.slice(0, index), item, ...value.slice(index)])
+      JSON.stringify([...value.slice(0, index), item, ...value.slice(index)]),
     );
   };
   const saveMultiValue = (
     newValue: { [key: string]: string },
-    index: number
+    index: number,
   ) => {
     if (index >= value.length) {
       props.saveValue(JSON.stringify([...value, newValue]));
@@ -235,16 +380,16 @@ export const ObjectCell = (
     props.saveValue(
       JSON.stringify(
         (value as Record<string, any>[]).map((f, i) =>
-          i == index ? newValue : f
-        )
-      )
+          i == index ? newValue : f,
+        ),
+      ),
     );
   };
   const deleteMultiValue = (index: number) => {
     props.saveValue(
       JSON.stringify(
-        (value as Record<string, any>[]).filter((f, i) => i != index)
-      )
+        (value as Record<string, any>[]).filter((f, i) => i != index),
+      ),
     );
   };
   const newKey = (key: string) => {
@@ -281,8 +426,8 @@ export const ObjectCell = (
         onClick: (e) => {
           props.saveValue(
             JSON.stringify(
-              arrayMove(value as Record<string, any>[], index, index - 1)
-            )
+              arrayMove(value as Record<string, any>[], index, index - 1),
+            ),
           );
         },
       });
@@ -293,8 +438,8 @@ export const ObjectCell = (
         onClick: () => {
           props.saveValue(
             JSON.stringify(
-              arrayMove(value as Record<string, any>[], index, index + 1)
-            )
+              arrayMove(value as Record<string, any>[], index, index + 1),
+            ),
           );
         },
       });
@@ -312,10 +457,18 @@ export const ObjectCell = (
     props.superstate.ui.openMenu(
       offset,
       defaultMenu(props.superstate.ui, menuOptions),
-      windowFromDocument(e.view.document)
+      windowFromDocument(e.view.document),
     );
   };
 
+  // Per-instance namespace stamped onto each sortable item's data. Without
+  // this, a drag started in one ObjectCell's multi-list would also fire the
+  // useDndMonitor in any ancestor/sibling ObjectCell (single global DndContext)
+  // and reorder the wrong array. Namespace gates onDrag* to this cell only.
+  const sortableNamespace = useMemo(
+    () => `mk-obj-${Math.random().toString(36).slice(2, 9)}`,
+    [],
+  );
   const [dragProperty, setDragProperty] = useState<number>(-1);
   const [hoverNode, setHoverNode] = useState<number>(-1);
   const resetState = () => {
@@ -324,27 +477,37 @@ export const ObjectCell = (
   };
   useDndMonitor({
     onDragStart({ active }) {
-      if (active.data.current.type == "object")
-        setDragProperty(active.data.current.id);
+      const data: any = active.data.current;
+      if (data?.type === "object" && data?.namespace === sortableNamespace)
+        setDragProperty(data.index);
     },
     onDragOver({ active, over }) {
-      const overId = over?.data.current.id;
-      if (active.data.current.type == "object")
-        if (overId) setHoverNode(overId as number);
+      const data: any = active.data.current;
+      if (data?.type !== "object" || data?.namespace !== sortableNamespace)
+        return;
+      const overData: any = over?.data.current;
+      if (overData?.namespace !== sortableNamespace) return;
+      if (typeof overData?.index === "number") setHoverNode(overData.index);
     },
     onDragCancel() {
       resetState();
     },
-    onDragEnd({ active, over }) {
-      if (!active || hoverNode != -1) {
-        resetState();
+    onDragEnd({ active }) {
+      const data: any = active.data.current;
+      if (data?.type !== "object" || data?.namespace !== sortableNamespace) {
         return;
       }
-      props.saveValue(
-        JSON.stringify(
-          arrayMove(value as Record<string, any>[], dragProperty, hoverNode)
-        )
-      );
+      if (
+        dragProperty !== -1 &&
+        hoverNode !== -1 &&
+        dragProperty !== hoverNode
+      ) {
+        props.saveValue(
+          JSON.stringify(
+            arrayMove(value as Record<string, any>[], dragProperty, hoverNode),
+          ),
+        );
+      }
       resetState();
     },
   });
@@ -358,24 +521,40 @@ export const ObjectCell = (
   return !props.compactMode ? (
     props.multi ? (
       <div className="mk-cell-object-multi">
+        <SortableContext
+          items={(value as Record<string, any>[]).map(
+            (_, i) => `${sortableNamespace}-${i}`,
+          )}
+          strategy={verticalListSortingStrategy}
+        >
         {(value as Record<string, any>[]).map((f, i) => (
-          <ObjectEditor
+          <SortableObjectItem
             key={i}
-            superstate={superstate}
-            value={f}
-            compactMode={props.compactMode}
-            row={props.row}
-            typeName={parsedValue.typeName}
-            columns={props.columns}
-            type={type}
-            saveValue={(newValue) => saveMultiValue(newValue, i)}
-            saveType={saveType}
-            editMode={props.editMode}
-            draggable={true}
+            id={`${sortableNamespace}-${i}`}
+            namespace={sortableNamespace}
             index={i}
-            showDragMenu={(e) => showPropertyMultiMenu(e, i)}
-          ></ObjectEditor>
+          >
+            {(listeners) => (
+              <ObjectEditor
+                superstate={superstate}
+                value={f}
+                compactMode={props.compactMode}
+                row={props.row}
+                typeName={parsedValue.typeName}
+                columns={props.columns}
+                type={type}
+                saveValue={(newValue) => saveMultiValue(newValue, i)}
+                saveType={saveType}
+                editMode={props.editMode}
+                draggable={true}
+                index={i}
+                showDragMenu={(e) => showPropertyMultiMenu(e, i)}
+                dragHandleListeners={listeners}
+              />
+            )}
+          </SortableObjectItem>
         ))}
+        </SortableContext>
         {dragProperty != -1 &&
           createPortal(
             <DragOverlay dropAnimation={null} zIndex={1600}>
@@ -393,7 +572,7 @@ export const ObjectCell = (
                 draggable={false}
               ></ObjectEditor>
             </DragOverlay>,
-            document.body
+            document.body,
           )}
       </div>
     ) : (
@@ -420,7 +599,7 @@ export const ObjectCell = (
             e.currentTarget.getBoundingClientRect(),
             <ObjectEditorModal {...props}></ObjectEditorModal>,
             props,
-            windowFromDocument(e.view.document)
+            windowFromDocument(e.view.document),
           );
         }}
       >
@@ -443,7 +622,7 @@ export const ObjectEditorModal = (
     compactMode: boolean;
     row: DBRow;
     hide?: () => void;
-  }
+  },
 ) => {
   const [value, setValue] = useState(props.initialValue);
   const [fieldValue, setFieldValue] = useState(props.propertyValue);
@@ -464,12 +643,12 @@ export const ObjectEditorModal = (
     if (props.property.type == "object-multi") {
       savePropValue(
         JSON.stringify({ ...parsedValue, type: newType }),
-        JSON.stringify(newValue)
+        JSON.stringify(newValue),
       );
     } else {
       savePropValue(
         JSON.stringify({ ...parsedValue, type: newType }),
-        JSON.stringify(_value)
+        JSON.stringify(_value),
       );
     }
   };
@@ -494,12 +673,12 @@ export const ObjectEditorModal = (
             {
               ..._value,
               [field.name]: "",
-            }
+            },
           );
           return true;
         },
         fileMetadata: true,
-      }
+      },
     );
   };
   const insertMultiValue = (index: number) => {
@@ -508,7 +687,7 @@ export const ObjectEditorModal = (
 
     const item = Object.keys(type).reduce((p, c) => ({ ...p, [c]: "" }), {});
     saveValue(
-      JSON.stringify([...val.slice(0, index), item, ...val.slice(index)])
+      JSON.stringify([...val.slice(0, index), item, ...val.slice(index)]),
     );
   };
   return (

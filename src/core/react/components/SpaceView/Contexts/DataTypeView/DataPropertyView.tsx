@@ -1,7 +1,8 @@
 import { showNewPropertyMenu } from "core/react/components/UI/Menus/contexts/newSpacePropertyMenu";
 import { parseFieldValue } from "core/schemas/parseFieldValue";
+import { CollapseToggleSmall } from "core/react/components/UI/Toggles/CollapseToggleSmall";
 import i18n from "shared/i18n";
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import { windowFromDocument } from "shared/utils/dom";
 import { parseObject } from "utils/parsers";
 import { propertyIsObjectType } from "utils/properties";
@@ -86,6 +87,7 @@ export const DataPropertyView = (props: DataPropertyViewProps) => {
       JSON.stringify([...value.slice(0, index), item, ...value.slice(index)])
     );
   };
+  const [collapsed, setCollapsed] = useState<boolean>(true);
   return !props.compactMode ? (
     <>
       <div className="mk-path-context-row">
@@ -97,6 +99,13 @@ export const DataPropertyView = (props: DataPropertyViewProps) => {
           contexts={props.contexts}
           draggable={props.draggable}
         ></PropertyField>
+        {isObjectType && (
+          <CollapseToggleSmall
+            superstate={props.superstate}
+            collapsed={collapsed}
+            onToggle={(c) => setCollapsed(c)}
+          />
+        )}
 
         <div className="mk-path-context-value">
           {props.linkProp && (
@@ -113,45 +122,12 @@ export const DataPropertyView = (props: DataPropertyViewProps) => {
           )}
           {props.linkedProp ? (
             <div className="mk-active">{props.linkedProp}</div>
-          ) : isObjectType ? (
-            !props.compactMode && (
-              <div className="mk-cell-object-options">
-                {props.editMode > CellEditMode.EditModeValueOnly && (
-                  <button
-                    onClick={(e) => newProperty(e)}
-                    className="mk-inline-button"
-                  >
-                    <div
-                      className="mk-icon-xsmall"
-                      dangerouslySetInnerHTML={{
-                        __html: props.superstate.ui.getSticker("ui//plus"),
-                      }}
-                    ></div>
-                    {i18n.labels.propertyFileProp}
-                  </button>
-                )}
-                {props.column.type == "object-multi" && (
-                  <button
-                    onClick={(e) => insertMultiValue(0)}
-                    className="mk-inline-button"
-                  >
-                    <div
-                      className="mk-icon-xsmall"
-                      dangerouslySetInnerHTML={{
-                        __html: props.superstate.ui.getSticker("ui//insert"),
-                      }}
-                    ></div>
-                    {parsedValue?.typeName ?? "Object"}
-                  </button>
-                )}
-              </div>
-            )
-          ) : (
+          ) : isObjectType ? null : (
             <DataTypeView {...props}></DataTypeView>
           )}
         </div>
       </div>
-      {isObjectType && !props.compactMode && (
+      {isObjectType && !props.compactMode && !collapsed && (
         <div className="mk-path-context-row" style={{ marginLeft: "30px" }}>
           <DataTypeView {...props}></DataTypeView>
         </div>
