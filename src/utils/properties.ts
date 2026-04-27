@@ -163,6 +163,37 @@ export const yamlTypeToMDBType = (YAMLtype: string) => {
 export const propertyIsObjectType = (property: SpaceProperty) => {
   if (property.type == "object" || property.type == "object-multi" || property.type == "super") return true;
   return false
-  
+
 };
+
+// Like detectPropertyType but tailored for cell rendering: maps the
+// "unknown" return (null/empty values) to "text" so the cell still has a
+// renderer. Use this when picking a fallback type for an undeclared value.
+export const inferCellTypeForValue = (value: any, key = ""): string => {
+  const t = detectPropertyType(value, key);
+  return t === "unknown" ? "text" : t;
+};
+
+// Build an ObjectType-shape schema from an example object, recursing into
+// nested objects/arrays-of-objects so deeply-nested keys also get a typed
+// schema entry. Mirrors the structure expected by ObjectCell/ObjectEditor.
+export const deriveSchemaFromValue = (obj: Record<string, any>): any =>
+  Object.keys(obj).reduce<any>((acc, k) => {
+    const v = obj[k];
+    const t = inferCellTypeForValue(v, k);
+    const entry: any = { type: t, label: k };
+    if (t === "object" && v && typeof v === "object" && !Array.isArray(v)) {
+      entry.value = { type: deriveSchemaFromValue(v), typeName: k };
+    } else if (
+      t === "object-multi" &&
+      Array.isArray(v) &&
+      v.length > 0 &&
+      v[0] &&
+      typeof v[0] === "object" &&
+      !Array.isArray(v[0])
+    ) {
+      entry.value = { type: deriveSchemaFromValue(v[0]), typeName: k };
+    }
+    return { ...acc, [k]: entry };
+  }, {});
 
