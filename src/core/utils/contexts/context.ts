@@ -293,6 +293,24 @@ export const getContextProperties = (superstate: Superstate, context: string) : 
 }
 
 
+// Try to JSON-parse strings that look like an object/array. Repeated saves
+// of nested objects can leave behind values that have been stringified more
+// than once; this peels them back so inference sees the real shape.
+const unwrapStringifiedJSON = (v: any): any => {
+  let cur = v;
+  for (let i = 0; i < 5; i++) {
+    if (typeof cur !== "string") break;
+    const trimmed = cur.trimStart();
+    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) break;
+    try {
+      cur = JSON.parse(cur);
+    } catch {
+      break;
+    }
+  }
+  return cur;
+};
+
 // Merge sample-derived schema into an existing schema. Adds new keys.
 // For existing keys, only upgrades when the existing entry is a "text"
 // placeholder (the fallback we use when widening saw an empty value) and
@@ -305,7 +323,7 @@ const mergeObjectSchema = (
   let changed = false;
   const merged: any = { ...(existingType ?? {}) };
   for (const k of Object.keys(sample)) {
-    const v = sample[k];
+    const v = unwrapStringifiedJSON(sample[k]);
     if (!(k in merged)) {
       merged[k] = { ...deriveSchemaFromValue({ [k]: v })[k] };
       changed = true;
@@ -366,19 +384,11 @@ export const widenObjectSchemasForPath = async (
   if (!rawFm) return;
 
   for (const col of objectCols) {
-    let v: any = rawFm[col.name];
-    if (v == null) continue;
     // readProperties() runs each value through parseProperty, which
-    // JSON-stringifies nested objects. Parse it back so we can introspect the
-    // live shape; if it's not actually JSON, give up on this column.
-    if (typeof v === "string") {
-      try {
-        v = JSON.parse(v);
-      } catch {
-        continue;
-      }
-    }
-    if (typeof v !== "object") continue;
+    // JSON-stringifies nested objects. Repeated saves can leave values
+    // double-stringified, so peel until we hit a non-string.
+    const v: any = unwrapStringifiedJSON(rawFm[col.name]);
+    if (v == null || typeof v !== "object") continue;
     const sample = Array.isArray(v) ? v[0] : v;
     if (!sample || typeof sample !== "object" || Array.isArray(sample))
       continue;
