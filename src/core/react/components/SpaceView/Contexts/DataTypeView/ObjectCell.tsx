@@ -20,7 +20,7 @@ import i18n from "shared/i18n";
 import { DBRow, SpaceTableColumn } from "shared/types/mdb";
 import { MenuObject } from "shared/types/menu";
 import { windowFromDocument } from "shared/utils/dom";
-import { parseObject } from "utils/parsers";
+import { parseLinkString, parseObject } from "utils/parsers";
 import {
   coerceStringToType,
   defaultValueForType,
@@ -128,9 +128,6 @@ export const ObjectEditor = (props: {
   };
 
   const showPropertyMenu = (e: React.MouseEvent, field: string) => {
-    if (props.editMode <= CellEditMode.EditModeValueOnly) {
-      return;
-    }
     const offset = (e.target as HTMLElement).getBoundingClientRect();
     const menuOptions: SelectOption[] = [];
     menuOptions.push({
@@ -260,7 +257,11 @@ export const ObjectEditor = (props: {
           },
         };
 
-        saveType(newType, val);
+        // Pass the merged outer value (current value with just this
+        // sub-field replaced) — without this, saveType overwrites our
+        // entire value with the inner cell's value, wiping every other
+        // sibling key.
+        saveType(newType, { ...value, [field.name]: val });
       }
     } else {
       saveVal(field.name, value);
@@ -287,12 +288,39 @@ export const ObjectEditor = (props: {
           // values get JSON-stringified so the routed-to ObjectCell can
           // re-parse them and recurse; primitives get stringified too because
           // BooleanCell, NumberCell, etc. compare on string equality.
-          const initial =
-            raw == null
-              ? ""
-              : typeof raw === "object"
-                ? JSON.stringify(raw)
-                : String(raw);
+          // Link values arrive as raw "[[path]]" strings; LinkCell expects
+          // the resolved path without brackets, so strip them here.
+          const initial = (() => {
+            if (raw == null) return "";
+            // Some values may have been serialized once already; peel
+            // a JSON-array string back to a live array so multi-link
+            // unwrapping below applies uniformly.
+            let working: any = raw;
+            if (
+              typeof working === "string" &&
+              (f.type === "link-multi" ||
+                f.type === "option-multi" ||
+                f.type === "object-multi") &&
+              working.trimStart().startsWith("[")
+            ) {
+              const peeled = tryParseJSON(working);
+              if (Array.isArray(peeled)) working = peeled;
+            }
+            if (Array.isArray(working)) {
+              if (f.type === "link-multi") {
+                return JSON.stringify(
+                  working.map((r) =>
+                    typeof r === "string" ? parseLinkString(r) : r,
+                  ),
+                );
+              }
+              return JSON.stringify(working);
+            }
+            if (typeof working === "object") return JSON.stringify(working);
+            if (f.type === "link" && typeof working === "string")
+              return parseLinkString(working);
+            return String(working);
+          })();
 
           // Cell renderers (BooleanCell, NumberCell, the inner ObjectCell)
           // bubble values up as strings. Coerce them back to their native
@@ -318,7 +346,7 @@ export const ObjectEditor = (props: {
               propertyMenu={(e) => showPropertyMenu(e, f.name)}
               row={value}
               columns={allProperties}
-              source={null}
+              source={(props.row?.["File"] as string) ?? null}
               compactMode={props.compactMode}
               column={f}
               editMode={CellEditMode.EditModeAlways}
