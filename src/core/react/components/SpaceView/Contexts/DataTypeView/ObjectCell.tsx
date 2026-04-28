@@ -14,6 +14,7 @@ import {
 import { InputModal } from "core/react/components/UI/Modals/InputModal";
 import { parseFieldValue } from "core/schemas/parseFieldValue";
 import { SelectOption, Superstate } from "makemd-core";
+import { fieldTypes } from "schemas/mdb";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import i18n from "shared/i18n";
@@ -153,32 +154,49 @@ export const ObjectEditor = (props: {
       icon: "ui//list",
       value: "change-type",
       onClick: (ev: React.MouseEvent) => {
+        // Direct type-picker — onClick on each option fires saveType
+        // immediately. Mirrors the top-level Change Type behavior in
+        // PropertiesView.selectType: writes a default value for the new
+        // type so inference takes effect even when the file's m_fields
+        // write is a no-op (orphaned properties without a backing mdb).
         const r = (ev.target as HTMLElement).getBoundingClientRect();
-        showNewPropertyMenu(
-          props.superstate,
-          r,
-          windowFromDocument(ev.view.document),
-          {
-            spaces: [],
-            fields: [],
-            name: field,
-            type: props.type?.[field]?.type,
-            saveField: (_source, newField) => {
-              saveType(
-                {
-                  ...(props.type ?? {}),
-                  [field]: {
-                    ...(props.type?.[field] ?? { label: field }),
-                    type: newField.type,
-                    label: props.type?.[field]?.label ?? field,
-                  },
-                },
-                value,
-              );
-              return true;
+        const currentType = props.type?.[field]?.type;
+        const applyType = (newType: string) => {
+          if (!newType || newType === currentType) return;
+          const seed = defaultValueForType(newType);
+          saveType(
+            {
+              ...(props.type ?? {}),
+              [field]: {
+                ...(props.type?.[field] ?? { label: field }),
+                type: newType,
+                label: props.type?.[field]?.label ?? field,
+              },
             },
-            fileMetadata: true,
+            { ...value, [field]: seed === undefined ? "" : seed },
+          );
+        };
+        props.superstate.ui.openMenu(
+          r,
+          {
+            ui: props.superstate.ui,
+            multi: false,
+            editable: false,
+            searchable: true,
+            value: currentType ? [currentType] : [],
+            showAll: true,
+            options: fieldTypes
+              .filter((f) => f.metadata)
+              .map((f, i) => ({
+                id: i + 1,
+                name: f.label,
+                value: f.type,
+                icon: f.icon,
+                onClick: () => applyType(f.type),
+              })),
+            saveOptions: (_keys, values) => applyType(values[0]),
           },
+          windowFromDocument(ev.view.document),
         );
       },
     });
