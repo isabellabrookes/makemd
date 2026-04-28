@@ -163,7 +163,16 @@ export const ObjectEditor = (props: {
         const currentType = props.type?.[field]?.type;
         const applyType = (newType: string) => {
           if (!newType || newType === currentType) return;
-          const seed = defaultValueForType(newType);
+          // Keep the existing value if there is one — text/link/option
+          // can hold anything, and primitive cells coerce on read. Only
+          // seed a default when the field is empty so the new type still
+          // has something to render.
+          const existing = value[field];
+          const isEmpty =
+            existing == null || existing === "" || existing === " ";
+          const next = isEmpty
+            ? defaultValueForType(newType) ?? ""
+            : existing;
           saveType(
             {
               ...(props.type ?? {}),
@@ -173,7 +182,7 @@ export const ObjectEditor = (props: {
                 label: props.type?.[field]?.label ?? field,
               },
             },
-            { ...value, [field]: seed === undefined ? "" : seed },
+            { ...value, [field]: next },
           );
         };
         props.superstate.ui.openMenu(
