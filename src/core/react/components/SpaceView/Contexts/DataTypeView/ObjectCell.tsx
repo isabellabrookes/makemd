@@ -163,16 +163,40 @@ export const ObjectEditor = (props: {
         const currentType = props.type?.[field]?.type;
         const applyType = (newType: string) => {
           if (!newType || newType === currentType) return;
-          // Keep the existing value if there is one — text/link/option
-          // can hold anything, and primitive cells coerce on read. Only
-          // seed a default when the field is empty so the new type still
-          // has something to render.
+          // Try to convert the existing value to a shape inference will
+          // recognise as the new type. Falls back to the new type's
+          // default when the value is empty or incompatible.
           const existing = value[field];
           const isEmpty =
             existing == null || existing === "" || existing === " ";
-          const next = isEmpty
-            ? defaultValueForType(newType) ?? ""
-            : existing;
+          const fallback = () => defaultValueForType(newType) ?? "";
+          const next = (() => {
+            if (isEmpty) return fallback();
+            switch (newType) {
+              case "text":
+                return String(existing);
+              case "boolean": {
+                if (typeof existing === "boolean") return existing;
+                if (existing === "true") return true;
+                if (existing === "false") return false;
+                return fallback();
+              }
+              case "number": {
+                if (typeof existing === "number") return existing;
+                const n = Number(existing);
+                return Number.isNaN(n) ? fallback() : n;
+              }
+              case "date":
+                if (
+                  typeof existing === "string" &&
+                  /^\d{4}-\d{2}-\d{2}/.test(existing)
+                )
+                  return existing;
+                return fallback();
+              default:
+                return existing;
+            }
+          })();
           saveType(
             {
               ...(props.type ?? {}),
