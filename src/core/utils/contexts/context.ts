@@ -316,7 +316,7 @@ const unwrapStringifiedJSON = (v: any): any => {
 // placeholder (the fallback we use when widening saw an empty value) and
 // the live value now infers to something more specific. Never downgrades or
 // overrides a non-text type — explicit user choices are preserved.
-const mergeObjectSchema = (
+export const mergeObjectSchema = (
   existingType: any,
   sample: Record<string, any>,
 ): { merged: any; changed: boolean } => {
@@ -331,9 +331,18 @@ const mergeObjectSchema = (
     }
     const existingEntry = merged[k];
     const inferred = inferCellTypeForValue(v, k);
-    // Upgrade text placeholder to a more specific inferred type if the live
-    // value clearly demands it.
-    if (existingEntry.type === "text" && inferred !== "text") {
+    // Upgrade generic placeholders to a more specific inferred type when the
+    // live value clearly demands it (e.g. text→boolean, option-multi→link-multi).
+    // Non-generic types are preserved so explicit user choices stay sticky.
+    const isGenericExisting =
+      existingEntry.type === "text" ||
+      existingEntry.type === "option" ||
+      existingEntry.type === "option-multi";
+    if (
+      isGenericExisting &&
+      inferred !== existingEntry.type &&
+      inferred !== "text"
+    ) {
       merged[k] = { ...deriveSchemaFromValue({ [k]: v })[k] };
       changed = true;
       continue;
